@@ -14,6 +14,14 @@ type Window interface {
 	CreateTab() (Tab, error)
 	ListTabs() ([]Tab, error)
 	Activate() error
+	Frame() (Frame, error)
+	SetFrame(f Frame) error
+}
+
+// Frame is a window's position and size in screen points. The origin is the
+// bottom left corner of the main display.
+type Frame struct {
+	X, Y, Width, Height int32
 }
 
 type window struct {
@@ -93,4 +101,52 @@ func (w *window) Activate() error {
 		}},
 	})
 	return err
+}
+
+// Frame returns where the window currently sits on screen.
+func (w *window) Frame() (Frame, error) {
+	resp, err := w.c.Call(&api.ClientOriginatedMessage{
+		Submessage: &api.ClientOriginatedMessage_ListSessionsRequest{
+			ListSessionsRequest: &api.ListSessionsRequest{},
+		},
+	})
+	if err != nil {
+		return Frame{}, fmt.Errorf("could not list sessions: %w", err)
+	}
+	for _, window := range resp.GetListSessionsResponse().GetWindows() {
+		if window.GetWindowId() != w.id {
+			continue
+		}
+		frame := window.GetFrame()
+		return Frame{
+			X:      frame.GetOrigin().GetX(),
+			Y:      frame.GetOrigin().GetY(),
+			Width:  frame.GetSize().GetWidth(),
+			Height: frame.GetSize().GetHeight(),
+		}, nil
+	}
+	return Frame{}, fmt.Errorf("window %q not found", w.id)
+}
+
+// SetFrame moves and resizes the window. iTerm2 clamps the height to the
+// display the window lands on, but does not clamp the width.
+func (w *window) SetFrame(f Frame) error {
+	value := fmt.Sprintf(`{"origin":{"x":%d,"y":%d},"size":{"width":%d,"height":%d}}`,
+		f.X, f.Y, f.Width, f.Height)
+	resp, err := w.c.Call(&api.ClientOriginatedMessage{
+		Submessage: &api.ClientOriginatedMessage_SetPropertyRequest{
+			SetPropertyRequest: &api.SetPropertyRequest{
+				Identifier: &api.SetPropertyRequest_WindowId{WindowId: w.id},
+				Name:       str("frame"),
+				JsonValue:  &value,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("could not set frame of window %q: %w", w.id, err)
+	}
+	if status := resp.GetSetPropertyResponse().GetStatus(); status != api.SetPropertyResponse_OK {
+		return fmt.Errorf("unexpected status setting frame of window %q: %s", w.id, status)
+	}
+	return nil
 }

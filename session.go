@@ -2,6 +2,7 @@ package iterm2
 
 import (
 	"fmt"
+	"os"
 
 	"marwan.io/iterm2/api"
 	"marwan.io/iterm2/client"
@@ -20,6 +21,21 @@ type Session interface {
 // More options can be added here as needed
 type SplitPaneOptions struct {
 	Vertical bool
+	// Profile is the name of the iTerm2 profile the new pane opens with.
+	// iTerm2 rejects a split that names no profile -- it answers
+	// MALFORMED_CUSTOM_PROFILE_PROPERTY even when no custom properties are
+	// sent at all -- so when this is empty DefaultProfile is used.
+	Profile string
+}
+
+// DefaultProfile returns the profile SplitPane uses when SplitPaneOptions
+// names none: the profile of the session iTerm2 exported ITERM_PROFILE for,
+// falling back to iTerm2's own default profile name.
+func DefaultProfile() string {
+	if profile := os.Getenv("ITERM_PROFILE"); profile != "" {
+		return profile
+	}
+	return "Default"
 }
 
 type session struct {
@@ -71,11 +87,16 @@ func (s *session) SplitPane(opts SplitPaneOptions) (Session, error) {
 	if opts.Vertical {
 		direction = api.SplitPaneRequest_VERTICAL.Enum()
 	}
+	profile := opts.Profile
+	if profile == "" {
+		profile = DefaultProfile()
+	}
 	resp, err := s.c.Call(&api.ClientOriginatedMessage{
 		Submessage: &api.ClientOriginatedMessage_SplitPaneRequest{
 			SplitPaneRequest: &api.SplitPaneRequest{
 				Session:        &s.id,
 				SplitDirection: direction,
+				ProfileName:    &profile,
 			},
 		},
 	})
@@ -83,6 +104,9 @@ func (s *session) SplitPane(opts SplitPaneOptions) (Session, error) {
 		return nil, fmt.Errorf("error splitting pane: %w", err)
 	}
 	spResp := resp.GetSplitPaneResponse()
+	if status := spResp.GetStatus(); status != api.SplitPaneResponse_OK {
+		return nil, fmt.Errorf("could not split session %q with profile %q: %s", s.id, profile, status)
+	}
 	if len(spResp.GetSessionId()) < 1 {
 		return nil, fmt.Errorf("expected at least one new session in split pane")
 	}
